@@ -1,0 +1,39 @@
+name: Build (unsigned)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '16.2'
+
+      - name: Install ldid
+        run: HOMEBREW_NO_AUTO_UPDATE=1 brew install ldid
+
+      - name: Build XPF (libxpf.dylib)
+        run: |
+          cd darksword-kexploit-fun/XPF
+          make all
+
+      - name: Build (no signing)
+        run: |
+          xcodebuild build \
+            -project darksword-kexploit-fun.xcodeproj \
+            -scheme darksword-kexploit-fun \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""

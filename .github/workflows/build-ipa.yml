@@ -1,0 +1,120 @@
+name: Build signed IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: Create a GitHub Release containing the IPA
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  build-ipa:
+    runs-on: macos-14
+    timeout-minutes: 30
+    env:
+      PROJECT: darksword-kexploit-fun.xcodeproj
+      SCHEME: darksword-kexploit-fun
+      BUNDLE_ID: com.34306.excalibur1
+      ARCHIVE_PATH: ${{ github.workspace }}/build/Excalibur.xcarchive
+      EXPORT_PATH: ${{ github.workspace }}/build/ipa
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '16.2'
+
+      - name: Check signing secrets
+        env:
+          CERTIFICATE: ${{ secrets.IOS_CERTIFICATE }}
+          CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          PROVISIONING_PROFILE: ${{ secrets.IOS_PROVISIONING_PROFILE }}
+          PROFILE_NAME: ${{ secrets.IOS_PROVISIONING_PROFILE_NAME }}
+          TEAM_ID: ${{ secrets.DEVELOPMENT_TEAM }}
+        run: |
+          for secret_name in CERTIFICATE CERTIFICATE_PASSWORD PROVISIONING_PROFILE PROFILE_NAME TEAM_ID; do
+            if [ -z "${!secret_name}" ]; then
+              echo "Missing repository secret: $secret_name" >&2
+              exit 1
+            fi
+          done
+
+      - name: Install build dependency
+        run: HOMEBREW_NO_AUTO_UPDATE=1 brew install ldid
+
+      - name: Install signing certificate and provisioning profile
+        env:
+          CERTIFICATE: ${{ secrets.IOS_CERTIFICATE }}
+          CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          PROVISIONING_PROFILE: ${{ secrets.IOS_PROVISIONING_PROFILE }}
+        run: |
+          keychain_path="$RUNNER_TEMP/build.keychain-db"
+          certificate_path="$RUNNER_TEMP/certificate.p12"
+          profile_path="$RUNNER_TEMP/profile.mobileprovision"
+          printf '%s' "$CERTIFICATE" | base64 --decode > "$certificate_path"
+          printf '%s' "$PROVISIONING_PROFILE" | base64 --decode > "$profile_path"
+          security create-keychain -p "" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "" "$keychain_path"
+          security import "$certificate_path" -P "$CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain_path"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" "$keychain_path"
+          security list-keychain -d user -s "$keychain_path"
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          profile_uuid="$(security cms -D -i "$profile_path" | plutil -extract UUID raw -)"
+          cp "$profile_path" "$HOME/Library/MobileDevice/Provisioning Profiles/$profile_uuid.mobileprovision"
+
+      - name: Archive application
+        env:
+          TEAM_ID: ${{ secrets.DEVELOPMENT_TEAM }}
+          PROFILE_NAME: ${{ secrets.IOS_PROVISIONING_PROFILE_NAME }}
+        run: |
+          xcodebuild archive -project "$PROJECT" -scheme "$SCHEME" -configuration Release \
+            -destination 'generic/platform=iOS' -archivePath "$ARCHIVE_PATH" \
+            CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM="$TEAM_ID" \
+            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME"
+
+      - name: Export IPA
+        env:
+          TEAM_ID: ${{ secrets.DEVELOPMENT_TEAM }}
+          PROFILE_NAME: ${{ secrets.IOS_PROVISIONING_PROFILE_NAME }}
+        run: |
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>ad-hoc</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>teamID</key><string>$TEAM_ID</string>
+            <key>provisioningProfiles</key><dict><key>$BUNDLE_ID</key><string>$PROFILE_NAME</string></dict>
+            <key>stripSwiftSymbols</key><true/>
+          </dict></plist>
+          PLIST
+          xcodebuild -exportArchive -archivePath "$ARCHIVE_PATH" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" -exportPath "$EXPORT_PATH"
+          mv "$EXPORT_PATH"/*.ipa "$EXPORT_PATH/Excalibur.ipa"
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Excalibur-IPA-${{ github.run_number }}
+          path: build/ipa/Excalibur.ipa
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish GitHub Release
+        if: inputs.publish_release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "ipa-${{ github.run_number }}" build/ipa/Excalibur.ipa \
+            --title "Excalibur IPA #${{ github.run_number }}" --generate-notes

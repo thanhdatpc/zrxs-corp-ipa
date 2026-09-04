@@ -1,0 +1,14 @@
+# macOS
+.DS_Store
+
+# Xcode
+xcuserdata/
+*.xcuserstate
+DerivedData/
+build/
+
+# Crash / panic logs
+*.ips
+
+# Codewhale local tooling
+.codewhale/

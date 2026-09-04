@@ -1,0 +1,105 @@
+name: Build unsigned IPA
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-unsigned-ipa:
+    runs-on: macos-14
+    timeout-minutes: 30
+    concurrency:
+      group: unsigned-ipa-release-${{ github.ref }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '16.2'
+
+      - name: Install build dependency
+        run: HOMEBREW_NO_AUTO_UPDATE=1 brew install ldid
+
+      # The app links against -lxpf before its Xcode Run Script phase runs.
+      - name: Build XPF library before linking the app
+        run: |
+          cd darksword-kexploit-fun/XPF
+          make all
+
+      - name: Set release version
+        id: version
+        run: |
+          marketing_version="$(xcodebuild -showBuildSettings \
+            -project darksword-kexploit-fun.xcodeproj \
+            -scheme darksword-kexploit-fun \
+            -configuration Release | awk '/ MARKETING_VERSION = / { print $3; exit }')"
+          test -n "$marketing_version"
+          echo "marketing_version=$marketing_version" >> "$GITHUB_OUTPUT"
+          echo "tag=v${marketing_version}.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+
+      - name: Build without Apple code signing
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project darksword-kexploit-fun.xcodeproj \
+            -scheme darksword-kexploit-fun \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            CONFIGURATION_BUILD_DIR="$GITHUB_WORKSPACE/build/Products" \
+            CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" 2>&1 | tee /tmp/xcodebuild.log | \
+            grep -E "^(error:|warning:.*error|.*: error:|Build FAILED|✗|CompileC|Ld )" || true
+          if grep -qE "^(error:|.*: error:)" /tmp/xcodebuild.log 2>/dev/null; then
+            echo "=== COMPILER ERRORS ==="
+            grep -E "^(error:|.*: error:)" /tmp/xcodebuild.log | head -40
+            echo "=== END ERRORS ==="
+            exit 1
+          fi
+
+      - name: Package unsigned IPA
+        run: |
+          app_path="$(find "$GITHUB_WORKSPACE/build/Products" -maxdepth 3 -type d -name '*.app' -print -quit)"
+          staging_path="$RUNNER_TEMP/ipa-staging"
+          ipa_path="$GITHUB_WORKSPACE/build/ZRXS-Corp.ipa"
+
+          test -n "$app_path" && test -d "$app_path"
+          mkdir -p "$staging_path/Payload"
+          ditto "$app_path" "$staging_path/Payload/kfun.app"
+          (
+            cd "$staging_path"
+            ditto -c -k --sequesterRsrc --keepParent Payload "$ipa_path"
+          )
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZRXS-Corp-IPA-${{ steps.version.outputs.tag }}
+          path: build/ZRXS-Corp.ipa
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          MARKETING_VERSION: ${{ steps.version.outputs.marketing_version }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "build/ZRXS-Corp.ipa" --clobber
+          else
+            gh release create "$TAG" "build/ZRXS-Corp.ipa" \
+              --title "ZRXS CORPORATION v${MARKETING_VERSION} (${GITHUB_RUN_NUMBER})" \
+              --generate-notes
+          fi
