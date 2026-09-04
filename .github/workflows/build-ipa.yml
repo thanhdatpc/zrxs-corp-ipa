@@ -73,6 +73,13 @@ jobs:
           profile_uuid="$(security cms -D -i "$profile_path" | plutil -extract UUID raw -)"
           cp "$profile_path" "$HOME/Library/MobileDevice/Provisioning Profiles/$profile_uuid.mobileprovision"
 
+      - name: Build XPF library before linking the app
+        run: |
+          cd darksword-kexploit-fun/XPF
+          rm -f external/ChOma/include/choma
+          ln -s ../src external/ChOma/include/choma
+          make all
+
       - name: Archive application
         env:
           TEAM_ID: ${{ secrets.DEVELOPMENT_TEAM }}

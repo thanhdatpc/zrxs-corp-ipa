@@ -34,6 +34,8 @@ jobs:
       - name: Build XPF library before linking the app
         run: |
           cd darksword-kexploit-fun/XPF
+          rm -f external/ChOma/include/choma
+          ln -s ../src external/ChOma/include/choma
           make all
 
       - name: Set release version

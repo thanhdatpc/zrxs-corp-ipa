@@ -25,6 +25,8 @@ jobs:
       - name: Build XPF (libxpf.dylib)
         run: |
           cd darksword-kexploit-fun/XPF
+          rm -f external/ChOma/include/choma
+          ln -s ../src external/ChOma/include/choma
           make all
 
       - name: Build (no signing)
